@@ -1808,9 +1808,9 @@ class Valis(object):
             slide_dims = reader.metadata.slide_dimensions
             levels_in_range = np.where(slide_dims.max(axis=1) < self.max_image_dim_px)[0]
             if len(levels_in_range) > 0:
-                level = levels_in_range[0]
+                level = levels_in_range[1]
             else:
-                level = len(slide_dims) - 1
+                level = len(slide_dims) - 2
 
             vips_img = reader.slide2vips(level=level)
 
