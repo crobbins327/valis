@@ -34,7 +34,7 @@ for cf in serial_folders:
 
   # Create a Valis object and use it to register the slides in slide_src_dir
   start = time.time()
-  registrar = registration.Valis(slide_src_dir, results_dst_dir, imgs_ordered=True)
+  registrar = registration.Valis(slide_src_dir, results_dst_dir, imgs_ordered=True, max_image_dim_px=2000)
   # reader_cls = VipsSlideReader
   rigid_registrar, non_rigid_registrar, error_df = registrar.register(if_processing_kwargs=DEFAULT_FLOURESCENCE_PROCESSING_ARGS)
   stop = time.time()
