@@ -193,7 +193,7 @@ def filter_matches_gms(kp1_xy, kp2_xy, feature_d, img1_shape, img2_shape,
         filtered_src_points = kp1_xy[good_idx, :]
         filtered_dst_points = kp2_xy[good_idx, :]
 
-    return filtered_src_points, filtered_dst_points, good_idx
+    return np.array(filtered_src_points), np.array(filtered_dst_points), np.array(good_idx)
 
 
 

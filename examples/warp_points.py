@@ -38,6 +38,7 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 import pathlib
+
 from valis import registration, warp_tools
 
 # Load a registrar that has been saved

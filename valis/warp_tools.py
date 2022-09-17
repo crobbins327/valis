@@ -1,4 +1,3 @@
-from logging.config import valid_ident
 import multiprocessing
 from scipy.optimize import fmin_l_bfgs_b
 from scipy import ndimage, spatial
@@ -7,9 +6,8 @@ from shapely.strtree import STRtree
 from shapely.geometry import Polygon, MultiPolygon
 import matplotlib.pyplot as plt
 import numpy as np
-import skimage
 from joblib import Parallel, delayed, parallel_backend
-from skimage import draw, restoration, transform, filters
+from skimage import draw, restoration, transform, filters, morphology
 import tqdm
 import cv2
 from PIL import Image, ImageDraw
@@ -22,7 +20,10 @@ import SimpleITK as sitk
 from colorama import Fore
 import os
 import re
+from copy import deepcopy
 from . import valtils
+
+pyvips.cache_set_max(0)
 
 
 def is_pyvips_22():
@@ -136,13 +137,85 @@ def get_alignment_indices(n_imgs, ref_img_idx=None):
     return matching_indices
 
 
-def calc_memory_size_gb(shape, nchannels=1, bitdepth=8):
+def calc_memory_size_gb(shape, nchannels, np_dtype):
     """Estimate amount of space an image will take up, in Gb
     """
+
+    bitdepth = "".join(re.findall(r'\d+', np_dtype))
+    if len(bitdepth) > 0:
+        bitdepth = eval(bitdepth)
+    else:
+        bitdepth = 1
+
     n_px = nchannels*np.multiply(*shape)
     gb = ((n_px*8)/bitdepth)/(2**30)
 
     return gb
+
+
+def remove_invasive_displacements(bk_dxdy, M, src_shape_rc, out_shape_rc, inpaint_holes=False):
+    """Remove displacements that would distort the image edges
+    Finds areas where areas outside of the image get brought inside. Can
+    happen if displacements are combined.
+
+    Parameters
+    ----------
+    bk_dxdy : list
+        Displacement fields [x, y]
+
+    M : ndarray
+        3x3 transformation matrix
+
+    src_shape_rc : tuple
+        Shape (row, col) of the image before affine transform
+
+    Returns
+    -------
+    new_dxdy : list
+        `bk_dxdy` but with invasive displacements set to 0
+
+    """
+
+    new_dx = bk_dxdy[0].copy()
+    new_dy = bk_dxdy[1].copy()
+    if M is not None:
+        affine_mask = warp_img(np.full(src_shape_rc, 255, dtype=np.uint8), M, out_shape_rc=out_shape_rc, interp_method="nearest")
+        if not np.all(out_shape_rc == bk_dxdy[0].shape):
+            affine_mask = resize_img(affine_mask, bk_dxdy[0].shape, interp_method="nearest")
+            new_dx[affine_mask == 0] = 0
+            new_dy[affine_mask == 0] = 0
+
+    else:
+        affine_mask = np.full(out_shape_rc, 255, dtype=np.uint8)
+
+    inv_mask = 255*(affine_mask == 0).astype(np.uint8)
+    inv_nr = warp_img(inv_mask, bk_dxdy=bk_dxdy)
+    out_to_in = ((inv_nr > 0) & (affine_mask > 0))
+
+    selem = morphology.disk(3)
+    out_to_in  = morphology.binary_dilation(out_to_in, selem)
+
+    new_dy = bk_dxdy[1].copy()
+    new_dx = bk_dxdy[0].copy()
+
+    new_dx[out_to_in] = 0
+    new_dy[out_to_in] = 0
+
+    nr_img = np.round(warp_img(affine_mask, bk_dxdy=[new_dx, new_dy])).astype(np.uint8)
+
+    holes_mask = ((nr_img == 0) & (affine_mask > 0))
+    holes_mask = 255*(morphology.binary_dilation(holes_mask, selem)).astype(np.uint8)
+
+    if inpaint_holes and holes_mask.max() > 0:
+        new_dx = cv2.inpaint(new_dx.astype(np.float32), holes_mask, 3, cv2.INPAINT_TELEA)
+        new_dy = cv2.inpaint(new_dy.astype(np.float32), holes_mask, 3, cv2.INPAINT_TELEA)
+    else:
+        new_dx[holes_mask > 0] = 0
+        new_dy[holes_mask > 0] = 0
+
+    new_dxdy = np.array([new_dx, new_dy])
+
+    return new_dxdy
 
 
 def rescale_img(img, scaling):
@@ -172,7 +245,6 @@ def resize_img(img, out_shape_rc, interp_method="bicubic"):
     S = [sx, 0, 0, sy]
 
     interpolator = pyvips.Interpolate.new(interp_method)
-    img = img.copy_memory()
     resized = img.affine(S,
                          oarea=[0, 0, out_w, out_h],
                          interpolate=interpolator,
@@ -760,6 +832,13 @@ def vips2numpy(vi):
     return a
 
 
+def pad_img(img, padded_shape):
+    padding_T = get_padding_matrix(img.shape[0:2], padded_shape)
+    padded_img = warp_img(img, padding_T, out_shape_rc=padded_shape)
+
+    return padded_img, padding_T
+
+
 def warp_img(img, M=None, bk_dxdy=None, out_shape_rc=None,
              transformation_src_shape_rc=None,
              transformation_dst_shape_rc=None,
@@ -887,7 +966,6 @@ def warp_img(img, M=None, bk_dxdy=None, out_shape_rc=None,
         bg_color = list(bg_color)
 
     interpolator = pyvips.Interpolate.new(interp_method)
-    img = img.copy_memory()
     if do_rigid:
         if not np.all(src_sxy == 1):
             img_corners_xy = get_corners_of_image(src_shape_rc)[::-1]
@@ -934,20 +1012,34 @@ def warp_img(img, M=None, bk_dxdy=None, out_shape_rc=None,
         else:
             vips_dxdy = temp_dxdy
 
-        sim_tform = transform.SimilarityTransform(scale=dst_sxy)
-        S = sim_tform.params[0:2, 0:2].reshape(-1).tolist()
+        if dst_sxy is not None:
+            S = [dst_sxy[0], 0, 0, dst_sxy[1]]
+        else:
+            S = [1.0, 0.0, 0.0, 1.0]
+
         warp_dxdy = vips_dxdy.affine(S,
                         oarea=[0, 0, out_w, out_h],
                         interpolate=interpolator,
+                        premultiplied=True,
                         odx=-crop_x,
                         ody=-crop_y)
 
         index = pyvips.Image.xyz(affine_warped.width, affine_warped.height)
         warp_index = (index[0] + warp_dxdy[0]).bandjoin(index[1] + warp_dxdy[1])
-        warped = affine_warped.mapim(warp_index, interpolate=interpolator)
 
-        if bg_color is not None:
-            warped = (warped==0).bandand().ifthenelse(bg_color, warped)
+        try:
+            #Option to set backround color in mapim added in libvips 8.13
+            warped = affine_warped.mapim(warp_index,
+                premultiplied=True,
+                background=bg_color,
+                extend=bg_extender,
+                interpolate=interpolator)
+
+        except pyvips.error.Error:
+            warped = affine_warped.mapim(warp_index, interpolate=interpolator)
+            if bg_color is not None:
+                warped = (warped == 0).ifthenelse(bg_color, warped)
+
     else:
         warped = affine_warped
 
@@ -963,10 +1055,8 @@ def crop_img(img, xywh):
         is_array = True
         img = numpy2vips(img)
 
-    w, h = xywh[2:]
-    indices = pyvips.Image.xyz(w, h)
-    crop_map = indices + xywh[0:2]
-    cropped = img.mapim(crop_map)
+    wh = np.round(xywh[2:]).astype(int)
+    cropped = img.extract_area(*xywh[:2], *wh)
     if is_array:
         cropped = vips2numpy(cropped)
 
@@ -1074,7 +1164,6 @@ def get_warp_map(M=None, dxdy=None, transformation_dst_shape_rc=None,
 
     coord_map = np.array([xy_pos_in_src[c1], xy_pos_in_src[c2]])
 
-
     return coord_map
 
 
@@ -1126,7 +1215,7 @@ def center_and_get_translation_matrix(img_shape_rc, x, y, w, h):
     :return:
     '''
 
-    ### Center smaller image inside larger image ###
+    # Center smaller image inside larger image #
     img_center_w = int(img_shape_rc[1] / 2)
     img_center_h = int(img_shape_rc[0] / 2)
 
@@ -1339,8 +1428,8 @@ def smooth_dxdy(dxdy, grid_spacing_ratio=0.015, sigma_ratio=0.005,
 
         subgrid_r, subgrid_c = get_mesh(dx.shape, grid_spacing, inclusive=True)
 
-        grid = UCGrid((0, dx.shape[1], subgrid_r.shape[1]),
-                        (0, dx.shape[0], subgrid_r.shape[0]))
+        grid = UCGrid((0.0, float(dx.shape[1]), subgrid_r.shape[1]),
+                      (0.0, float(dx.shape[0]), subgrid_r.shape[0]))
 
         grid_y, grid_x = np.indices(dx.shape)
         grid_xy = np.dstack([grid_x.reshape(-1), grid_y.reshape(-1)]).astype(float)[0]
@@ -1554,8 +1643,8 @@ def _warp_pt_vips(xy, M=None, vips_bk_dxdy=None, vips_fwd_dxdy=None, src_sxy=Non
         region_bk_dxdy = vips2numpy(vips_region_bk_dxdy)
         region_dxdy = np.dstack(get_inverse_field(region_bk_dxdy[..., 0], region_bk_dxdy[..., 1]))
 
-    grid = UCGrid((0, bbox_w-1, bbox_w),
-                  (0, bbox_h-1, bbox_h))
+    grid = UCGrid((0.0, float(bbox_w-1), bbox_w),
+                  (0.0, float(bbox_h-1), bbox_h))
 
     dx_cubic_coeffs = filter_cubic(grid, region_dxdy[..., 0]).T
     dy_cubic_coeffs = filter_cubic(grid, region_dxdy[..., 1]).T
@@ -1710,9 +1799,8 @@ def _warp_xy_numpy(xy, M=None, transformation_src_shape_rc=None, transformation_
     if bk_dxdy is not None and fwd_dxdy is None:
         fwd_dxdy = get_inverse_field(bk_dxdy)
 
-    # Use cubic interpolation to determine position in warped image
-    grid = UCGrid((0, displacement_shape_rc[1]-1, displacement_shape_rc[1]),
-                  (0, displacement_shape_rc[0]-1, displacement_shape_rc[0]))
+    grid = UCGrid((0.0, float(displacement_shape_rc[1]-1), displacement_shape_rc[1]),
+                  (0.0, float(displacement_shape_rc[0]-1), displacement_shape_rc[0]))
 
     dx_cubic_coeffs = filter_cubic(grid, fwd_dxdy[0]).T
     dy_cubic_coeffs = filter_cubic(grid, fwd_dxdy[1]).T
@@ -2248,8 +2336,8 @@ def untangle(dxdy, n_grid_pts=50, penalty=10e-6, mask=None):
     untangled_dy = (mesh.sample_pos_xy[:, 1] - untangled_coords[:, 1]).reshape((mesh.nr, mesh.nc))
 
     padded_shape = mesh.padded_shape
-    grid = UCGrid((0, padded_shape[1], mesh.nc),
-                  (0, padded_shape[0], mesh.nr))
+    grid = UCGrid((0.0, float(padded_shape[1]), mesh.nc),
+                  (0.0, float(padded_shape[0]), mesh.nr))
 
     dx_cubic_coeffs = filter_cubic(grid, untangled_dx).T
     dy_cubic_coeffs = filter_cubic(grid, untangled_dy).T
@@ -2354,8 +2442,8 @@ def remove_folds_in_dxdy(dxdy, n_grid_pts=50, method="inpaint", paint_size=5000,
         untangled_dx = (mesh.sample_pos_xy[:, 0] - untangled_coords[:, 0]).reshape((mesh.nr, mesh.nc))
         untangled_dy = (mesh.sample_pos_xy[:, 1] - untangled_coords[:, 1]).reshape((mesh.nr, mesh.nc))
 
-        grid = UCGrid((0, padded_shape[1], mesh.nc),
-                      (0, padded_shape[0], mesh.nr))
+        grid = UCGrid((0.0, float(padded_shape[1]), mesh.nc),
+                      (0.0, float(padded_shape[0]), mesh.nr))
 
         dx_cubic_coeffs = filter_cubic(grid, untangled_dx).T
         dy_cubic_coeffs = filter_cubic(grid, untangled_dy).T

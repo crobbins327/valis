@@ -2,9 +2,8 @@
 
 """
 
-from csv import excel
 import os
-from skimage import util, io, transform
+from skimage import io, transform
 import pyvips
 import numpy as np
 from PIL import Image
@@ -31,6 +30,8 @@ import scyjava
 from . import valtils
 from . import slide_tools
 from . import warp_tools
+
+pyvips.cache_set_max(0)
 
 MAX_TILE_SIZE = 2**10
 """int: maximum tile used to read or write images"""
@@ -523,7 +524,7 @@ class MetaData(object):
         Physical size per pixel and the unit.
 
     channel_names : list
-        List of channel names.
+        List of channel names. None if image is RGB
 
     n_channels : int
         Number of channels.
@@ -867,12 +868,9 @@ class BioFormatsSlideReader(SlideReader):
             # javabridge.detach()
             jpype.detachThreadFromJVM()
 
-            # I don't want uint16 images to be converted to uint8!
-            # commenting this out
             # if np.issubdtype(pixel_type, np.unsignedinteger):
             #     tile = util.img_as_ubyte(tile)
 
-            # does it matter that the pyvips interpretation in srgb, not multiband for IF images?
             tile_array[idx] = slide_tools.numpy2vips(tile, self.metadata.pyvips_interpretation)
 
         n_cpu = multiprocessing.cpu_count() - 1
@@ -1298,10 +1296,9 @@ class VipsSlideReader(SlideReader):
             with valtils.HiddenPrints():
                 bf_reader = BioFormatsSlideReader(self.src_f)
 
-            slide_meta.channel_names = bf_reader.metadata.channel_names
+            slide_meta.channel_names = bf_reader.metadata.channel_names # None if RGB
             # Need to update the n_channels based on bioformats metadata if toilet roll .ome.tiff
-            # Not sure if this will cause problems for other image formats...
-            slide_meta.n_channels = len(slide_meta.channel_names)
+            slide_meta.n_channels = bf_reader.metadata.n_channels
             slide_meta.pixel_physical_size_xyu = bf_reader.metadata.pixel_physical_size_xyu
             slide_meta.bf_pixel_type = bf_reader.metadata.bf_pixel_type
             slide_meta.is_little_endian = bf_reader.metadata.is_little_endian
@@ -1310,7 +1307,6 @@ class VipsSlideReader(SlideReader):
             slide_meta.optimal_tile_wh = bf_reader.metadata.optimal_tile_wh
         else:
             slide_meta.pixel_physical_size_xyu = self._get_pixel_physical_size(vips_img)
-
 
         if slide_meta.is_rgb:
             slide_meta.channel_names = None
@@ -1356,10 +1352,6 @@ class VipsSlideReader(SlideReader):
                 vips_slide = vips_slide.copy(interpretation="b-w")
             else:
                 vips_slide = vips_slide.copy(interpretation="multiband")
-                # need to modify this slide metadata, assuming that all bands are channels
-                # if it was a bioformats compatible file (which .ome.tif is), the metadata.channel_names should be correct
-                # do not know if there is a case where the channel_names would not be updated correctly
-                # This is too late as the processing script only uses the initialized slide metadata for selecting channels based on channel names...
                 self.metadata.n_channels = vips_slide.bands
 
         return vips_slide
@@ -1965,7 +1957,7 @@ def get_slide_reader(src_f, series=None):
     can_only_use_openslide = f_extension in OPENSLIDE_ONLY
     if can_only_use_openslide and not can_use_openslide:
         msg = (f"file {os.path.split(src_f)[1]} can only be read by OpenSlide, "
-               f"which is required to open files with the follwing extensions: {', '.join(OPENSLIDE_ONLY)}."
+               f"which is required to open files with the follwing extensions: {', '.join(OPENSLIDE_ONLY)}. "
                f"However, OpenSlide cannot be found. Unable to read this slide."
                )
 
@@ -1980,8 +1972,8 @@ def get_slide_reader(src_f, series=None):
     except:
         can_use_pyvips = False
 
-    fail_msg = f"Can't find reader to open {os.path.split(src_f)[1]}. May need to create a new one by subclassing SlideReader. Returning None"
     if not can_use_openslide and not can_use_bf and not can_use_skimage and not can_use_pyvips:
+        fail_msg = f"Can't find reader to open {os.path.split(src_f)[1]}. May need to create a new one by subclassing SlideReader. Returning None"
         valtils.print_warning(fail_msg)
 
         return None

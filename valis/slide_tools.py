@@ -12,7 +12,7 @@ import imghdr
 from collections import Counter
 from . import warp_tools
 from . import slide_io
-from .import viz
+from . import viz
 
 IHC_NAME = "brightfield"
 IF_NAME = "fluorescence"

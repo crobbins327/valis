@@ -1,8 +1,6 @@
 """
 Collection of pre-processing methods for aligning images
 """
-
-#import csaps
 from scipy.interpolate import Akima1DInterpolator
 from skimage import exposure, filters, measure, morphology, restoration
 import numpy as np
@@ -326,7 +324,7 @@ def create_tissue_mask_from_rgb(img, brightness_q=0.99):
                                  (cnt_xy[:, 1] == dark_regions.shape[0]-1)
                                 )[0]
 
-        if len(on_border_idx) > 0 :
+        if len(on_border_idx) > 0:
             cv2.drawContours(edge_artifact_mask, [cnt], 0, 255, -1)
 
     cam_d_t, _ = filters.threshold_multiotsu(cam_d[edge_artifact_mask == 0])
@@ -337,10 +335,6 @@ def create_tissue_mask_from_rgb(img, brightness_q=0.99):
     concave_tissue_mask = mask2contours(tissue_mask)
 
     return tissue_mask, concave_tissue_mask
-
-
-
-
 
 
 def create_tissue_mask_from_multichannel(img):

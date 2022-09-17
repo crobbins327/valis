@@ -129,6 +129,15 @@ ENV/
 env.bak/
 venv.bak/
 
+# VS code project settings
+.vscode/
+.vscode/**
+
+
+#PyCharm project settings
+.idea/
+.idea/**
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -162,3 +171,5 @@ examples/expected_results/registration/ihc/processed/ihc_1.png
 examples/expected_results/registration/ihc/processed/ihc_1.png
 examples/register_HER2_IF.py
 *.png
+examples/expected_results/registration/cycif/data/cycif_registrar.pickle
+examples/expected_results/registration/ihc/data/ihc_registrar.pickle

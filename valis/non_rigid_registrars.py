@@ -11,6 +11,7 @@ from skimage import color as skcolor
 import pyvips
 import multiprocessing
 from joblib import Parallel, delayed, parallel_backend
+
 from tqdm import tqdm
 
 from . import viz
@@ -1233,7 +1234,43 @@ class NonRigidTileRegistrar(object):
         self.pbar = None
 
 
-    def norm_image(self, img):
+    def norm_img(self, img, stats, mask=None):
+        normed_img = exposure.rescale_intensity(img, out_range=(0, 255)).astype(np.uint8)
+        normed_img = preprocessing.norm_img_stats(normed_img, stats, mask)
+        normed_img = exposure.rescale_intensity(normed_img, out_range=(0, 255)).astype(np.uint8)
+
+        return normed_img
+
+    def norm_tiles(self, moving_img, fixed_img, tile_mask):
+        try:
+            # Try norming using these tile stats
+            if tile_mask is not None:
+                pos_px = np.where(tile_mask != 0)
+                tile_v = np.hstack([fixed_img[pos_px], moving_img[pos_px]])
+            else:
+                tile_v = np.hstack([fixed_img.reshape(-1), moving_img.reshape(-1)])
+
+            target_processing_stats = preprocessing.get_channel_stats(tile_v)
+
+            fixed_normed = self.norm_img(fixed_img, target_processing_stats, tile_mask)
+            moving_normed = self.norm_img(moving_img, target_processing_stats, tile_mask)
+
+        except ValueError:
+            # Norm using full image's stats
+            if self.target_stats is not None:
+                try:
+                    fixed_normed = self.norm_img(fixed_img, self.target_stats, tile_mask)
+                    moving_normed = self.norm_img(moving_img, self.target_stats, tile_mask)
+                except ValueError:
+                    fixed_normed = fixed_img
+                    moving_normed = moving_img
+            else:
+                fixed_normed = fixed_img
+                moving_normed = moving_img
+
+        return moving_normed, fixed_normed
+
+    def process_tile(self, img):
         """Process tiles
         """
         processor = self.processing_cls(image=img, src_f=None, level=None, series=None)
@@ -1243,77 +1280,89 @@ class NonRigidTileRegistrar(object):
             # processor.process_image doesn't take kwargs
             processed_img = processor.process_image()
 
-        if len(np.unique(processed_img)) == 1:
-            return processed_img
-        if self.target_stats is not None:
-            try:
-                processed_img = exposure.rescale_intensity(processed_img, out_range=(0, 255)).astype(np.uint8)
-                processed_img = preprocessing.norm_img_stats(processed_img, self.target_stats)
-                processed_img = exposure.rescale_intensity(processed_img, out_range=(0, 255)).astype(np.uint8)
-            except ValueError:
-                return processed_img
-
         return processed_img
+
 
     def reg_tile(self, tile_idx, lock):
 
         with lock:
             # Use lock when accessing images
-            fixed_tile = self.fixed_tiles[tile_idx]
-            moving_tile = self.moving_tiles[tile_idx]
-            if self.mask is not None:
-                tile_mask = self.mask_tiles[tile_idx]
-
-                if tile_mask.max() == 0:
-                    # Nothing to register
-                    empty_dxdy = pyvips.Image.black(moving_tile.width, moving_tile.height, bands=2)
-                    self.bk_dxdy_tiles[tile_idx] = empty_dxdy
-                    self.fwd_dxdy_tiles[tile_idx] = empty_dxdy
-                    self.pbar.update(1)
-
-                    return None
-
-                # Apply mask #
-                moving_tile = (tile_mask == 0).ifthenelse(0, moving_tile)
-                fixed_tile = (tile_mask == 0).ifthenelse(0, fixed_tile)
-                np_mask = warp_tools.vips2numpy(tile_mask)
-
-            else:
-                np_mask = None
+            tile_bbox_xywh = self.expanded_bboxes[tile_idx]
+            moving_tile = self.moving_img.extract_area(*tile_bbox_xywh)
+            fixed_tile = self.fixed_img.extract_area(*tile_bbox_xywh)
 
             np_fixed = warp_tools.vips2numpy(fixed_tile)
             np_moving = warp_tools.vips2numpy(moving_tile)
 
+            if self.mask is not None:
+                tile_mask = self.mask.extract_area(*tile_bbox_xywh)
+                np_mask = warp_tools.vips2numpy(tile_mask)
+            else:
+                np_mask = None
+
+            if moving_tile.interpretation == "srgb":
+                # Limit registration to be inside image
+                # Warped areas outside image have the same pixel values, usually 0
+                edge_mask = 255*((np_moving.min(axis=2) != np_moving.max(axis=2)) & (np_fixed.min(axis=2) != np_fixed.max(axis=2))).astype(np.uint8)
+
+                if np_mask is not None:
+                    np_mask = 255*((edge_mask > 0) & (np_mask > 0)).astype(np.uint8)
+                else:
+                    np_mask = edge_mask
+
+
+            # Check if either of the tiles are empty
+            is_empty = fixed_tile.max() == fixed_tile.min() or moving_tile.max() == moving_tile.min()
+            if np_mask is not None:
+                is_empty = is_empty or np_mask.max() == 0
+
+            if is_empty:
+                # Nothing to register
+                empty_dxdy = pyvips.Image.black(moving_tile.width, moving_tile.height, bands=2).cast("float")
+                self.bk_dxdy_tiles[tile_idx] = empty_dxdy
+                self.fwd_dxdy_tiles[tile_idx] = empty_dxdy
+                self.pbar.update(1)
+
+                return None
+
             if self.processing_cls is not None:
                 # Process tiles #
-                fixed_normed = self.norm_image(np_fixed)
-                moving_normed = self.norm_image(np_moving)
+                fixed_processed = self.process_tile(np_fixed)
+                moving_processed = self.process_tile(np_moving)
+
             else:
 
                 if np_fixed.ndim > 2:
                     fixed_g = np.abs(1 - skcolor.rgb2gray(np_fixed))
-                    fixed_normed = util.img_as_ubyte(fixed_g)
+                    fixed_processed = util.img_as_ubyte(fixed_g)
                 else:
-                    fixed_normed = np_fixed
+                    fixed_processed = np_fixed
 
                 if np_moving.ndim > 2:
                     moving_g = np.abs(1 - skcolor.rgb2gray(np_moving))
-                    moving_normed = util.img_as_ubyte(moving_g)
+                    moving_processed = util.img_as_ubyte(moving_g)
                 else:
-                    moving_normed = np_moving
+                    moving_processed = np_moving
+
+            moving_normed, fixed_normed = self.norm_tiles(moving_processed, fixed_processed, np_mask)
+
+            if np_mask is not None:
+                moving_normed[np_mask == 0] = 0
+                fixed_normed[np_mask == 0] = 0
 
             # Register tiles #
-
             tile_non_rigid_reg_obj = self.non_rigid_registrar_cls()
             _, _, bk_dxdy = tile_non_rigid_reg_obj.register(moving_normed, fixed_normed, mask=np_mask)
-            vips_tile_bk_dxdy = warp_tools.numpy2vips(np.dstack(bk_dxdy))
+            bk_dxdy = warp_tools.remove_invasive_displacements(bk_dxdy, M=None, src_shape_rc=None, out_shape_rc=moving_normed.shape[0:2])
+            vips_tile_bk_dxdy = warp_tools.numpy2vips(np.dstack(bk_dxdy).astype(np.float32))
 
             fwd_dxdy = warp_tools.get_inverse_field(bk_dxdy)
-            vips_tile_fwd_dxdy = warp_tools.numpy2vips(np.dstack(fwd_dxdy))
+            vips_tile_fwd_dxdy = warp_tools.numpy2vips(np.dstack(fwd_dxdy).astype(np.float32))
 
-            if self.mask is not None:
-                vips_tile_bk_dxdy = (tile_mask == 0).ifthenelse(0, vips_tile_bk_dxdy)
-                vips_tile_fwd_dxdy = (tile_mask == 0).ifthenelse(0, vips_tile_fwd_dxdy)
+            if np_mask is not None:
+                temp_tile_mask = warp_tools.numpy2vips(np_mask)
+                vips_tile_bk_dxdy = (temp_tile_mask == 0).ifthenelse(0, vips_tile_bk_dxdy)
+                vips_tile_fwd_dxdy = (temp_tile_mask == 0).ifthenelse(0, vips_tile_fwd_dxdy)
 
             self.bk_dxdy_tiles[tile_idx] = vips_tile_bk_dxdy
             self.fwd_dxdy_tiles[tile_idx] = vips_tile_fwd_dxdy
@@ -1407,9 +1456,7 @@ class NonRigidTileRegistrar(object):
             shape_rc = np.array([moving_img.height, moving_img.width])
 
         self.shape = shape_rc
-        self.moving_img = moving_img
-        self.fixed_img = fixed_img
-        self.mask = mask
+
         self.non_rigid_registrar_cls = non_rigid_registrar_cls
         self.processing_cls = processing_cls
         self.target_stats = target_stats
@@ -1421,21 +1468,18 @@ class NonRigidTileRegistrar(object):
             if mask is not None:
                 mask = warp_tools.numpy2vips(mask)
 
+        self.moving_img = moving_img
+        self.fixed_img = fixed_img
+        self.mask = mask
+
         temp_tile_bboxes = warp_tools.get_grid_bboxes(self.shape, self.tile_wh, self.tile_wh, inclusive=True)
         self.expanded_bboxes = np.array([warp_tools.expand_bbox(bbox_xywh, self.tile_buffer, self.shape) for bbox_xywh in temp_tile_bboxes])
-        self.moving_tiles = [moving_img.extract_area(*bbox_xywh).copy() for bbox_xywh in self.expanded_bboxes]
-        self.fixed_tiles = [fixed_img.extract_area(*bbox_xywh).copy() for bbox_xywh in self.expanded_bboxes]
 
         self.n_tiles = len(temp_tile_bboxes)
         self.bk_dxdy_tiles = [None] * self.n_tiles
         self.fwd_dxdy_tiles = [None] * self.n_tiles
         self.n_cols = len(np.unique(temp_tile_bboxes[:, 0]))
         self.n_rows = len(np.unique(temp_tile_bboxes[:, 1]))
-
-        if mask is not None:
-            self.mask_tiles = [mask.extract_area(*bbox_xywh).copy() for bbox_xywh in self.expanded_bboxes]
-        else:
-            self.mask_tiles = None
 
         bk_dxdy, fwd_dxdy = self.calc()
 
@@ -1450,4 +1494,5 @@ class NonRigidTileRegistrar(object):
         self.fwd_dxdy = fwd_dxdy
 
         return warped_img, fwd_dxdy, bk_dxdy
+
 

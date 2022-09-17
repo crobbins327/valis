@@ -58,9 +58,11 @@ The registration pipeline is fully automated and goes as follows:
 
    #. Error is estimated by calculating the distance between registered matched features in the full resolution images.
 
-The transformations found by VALIS can then be used to warp the full resolution slides. It is also possible to merge non-RGB registered slides to create a highly multiplexed image. These aligned and/or merged slides can then be saved as ome.tiff images.
+The transformations found by VALIS can then be used to warp the full resolution slides. It is also possible to merge non-RGB registered slides to create a highly multiplexed image. These aligned and/or merged slides can then be saved as ome.tiff images. The transformations can also be use to warp point data, such as cell centroids, polygon vertices, etc...
 
-In addition to warping images and slides, VALIS can also warp point data, such as cell centoids or ROI coordinates.
+In addition to registering images, VALIS provides tools to read slides using Bio-Formats and OpenSlide, which can be read at multiple resolutions and converted to numpy arrays or pyvips.Image objects. One can also slice regions of interest from these slides. VALIS also provides functions to convert slides to the ome.tiff format, preserving the original metadata. Please see examples and documentation for more details.
+
+
 
 Full documentation can be found at `ReadTheDocs <https://valis.readthedocs.io/en/latest/>`_.
 
@@ -564,6 +566,18 @@ The defaults used by VALIS work well, but one may wish to try some other values/
 
 Change Log
 ==========
+
+Version 1.0.0rc10 (August 11, 2022)
+-----------------------------------
+#. Fixed compatibility with updated interpolation package (Issue 12).
+
+
+Version 1.0.0rc9 (August 4, 2022)
+---------------------------------
+#. Reduced memory usage for micro-registration and warping. No longer copying memory before warping, and large displacement fields saved as .tiff images instead of .vips images.
+#. Reduced unwanted accumulation of displacements
+#. :code:`viz.draw_matches` now returns an image instead of a matplotlib pyplot
+#. Pull request 9-11 bug fixes (many thanks to crobbins327 and zindy): Not converting uint16 to uint8 when reading using Bio-Formats or pyvips; fixed rare error when filtering neighbor matches; :code:`viz.get_grid` consistent on Linux and Windows; typos.
 
 
 Version 1.0.0rc8 (July 1, 2022)

@@ -3,7 +3,7 @@
 """
 import colour
 import matplotlib.pyplot as plt
-from skimage import feature, draw, color, exposure, transform
+from skimage import draw, color, exposure, transform
 from scipy.cluster.hierarchy import dendrogram
 from scipy.spatial import distance
 import numpy as np
@@ -52,33 +52,77 @@ def draw_features(kp_xy, image, n_features=500):
     return feature_img
 
 
-def draw_matches(src_img, kp1_xy, dst_img, kp2_xy, alignment='horizontal'):
-    """
-    Draw all matches between src_img and dst_img, using scikit-image. Assumes they have already been filtered
+def draw_matches(src_img, kp1_xy, dst_img, kp2_xy, rad=3, alignment='horizontal'):
+    """Draw feature matches between two images
+
     Parameters
     ----------
-        src_img : ndarray
-            Image from which kp1_xy were detected
+    src_img : ndarray
+        Image associated with `kp1_xy`
 
-        kp1_xy : (N, 2) array
-            Image 1s keypoint positions, in xy coordinates,  for each of the N descriptors in desc1
+    kp1_xy : ndarray
+        xy coordinates of feature points found in `src_img`
 
-        dst_img : ndarray
-            Image from which kp2_xy were detected
+    dst_img : ndarray
+        Image associated with `kp2_xy`
 
-        kp2_xy : (M, 2) array
-            Image 1s keypoint positions, in xy coordinates,  for each of the M descriptors in desc2
+    kp2_xy : ndarray
+        xy coordinates of feature points found in `dst_img`
+
+    rad : int
+        Radius of circles used to draw feature points
+
+    alignment : string
+        How to stack the images, either 'veritcal' or 'horizontal'.
+
+    Returns
+    -------
+    feature_img : ndarray
+        Image show corresponding features of `src_img` and `dst_img`
+
     """
-    fig, ax = plt.subplots(nrows=1, ncols=1)
 
-    plt.gray()
-    match_idx = np.arange(0, len(kp1_xy))
-    matches = np.dstack([match_idx, match_idx])[0]
+    all_dims = np.array([src_img.shape, dst_img.shape])
+    out_shape = np.max(all_dims, axis=0)[0:2]
 
-    feature.plot_matches(ax, src_img, dst_img, kp1_xy[:, ::-1], kp2_xy[:, ::-1], matches, alignment=alignment)
-    plt.title(" ".join([str(len(kp1_xy)), "matches"]))
-    ax.axis('off')
-    plt.tight_layout()
+    padded_src, src_T = warp_tools.pad_img(src_img, out_shape)
+    padded_dst, dst_T = warp_tools.pad_img(dst_img, out_shape)
+
+    if alignment.lower().startswith("v"):
+        feature_img = np.vstack([padded_src, padded_dst])
+        dst_xy_shift = np.array([0, out_shape[0]])
+    else:
+        feature_img = np.hstack([padded_src, padded_dst])
+        dst_xy_shift = np.array([out_shape[1], 0])
+
+    if feature_img.ndim == 2:
+        feature_img = color.gray2rgb(feature_img).astype(np.uint8)
+
+    dst_T[0:2, 2] -= dst_xy_shift
+    dst_xy_in_feature_img = warp_tools.warp_xy(kp2_xy, M=dst_T)
+
+    n_pt = np.min([kp1_xy.shape[0], kp2_xy.shape[0]])
+    cmap = (255*jzazbz_cmap()).astype(np.uint8)
+    all_color_idx = np.arange(0, cmap.shape[0])
+    colors = cmap[np.random.choice(all_color_idx, n_pt), :]
+    for i in range(n_pt):
+
+        xy1 = kp1_xy[i]
+        xy2 = dst_xy_in_feature_img[i]
+        pt_color = colors[i]
+
+        circ_rc_1 = draw.ellipse(*xy1[::-1], rad, rad, shape=feature_img.shape)
+        circ_rc_2 = draw.ellipse(*xy2[::-1], rad, rad, shape=feature_img.shape)
+        line_rc = np.array(draw.line_aa(*np.round(xy1[::-1]).astype(int), *np.round(xy2[::-1]).astype(int)))
+        line_rc[0] = np.clip(line_rc[0], 0, feature_img.shape[0]).astype(int)
+        line_rc[1] = np.clip(line_rc[1], 0, feature_img.shape[1]).astype(int)
+
+        feature_img[line_rc[0].astype(int), line_rc[1].astype(int)] = pt_color*line_rc[2][..., np.newaxis]
+        feature_img[circ_rc_1] = pt_color
+        feature_img[circ_rc_2] = pt_color
+
+    return feature_img
+
 
 def draw_clusterd_D(D, optimal_Z):
     """Draw clustered distance matrix with dendrograms along the axes
@@ -110,7 +154,7 @@ def draw_clusterd_D(D, optimal_Z):
 
 
 # Non-rigid visualization #
-@nb.njit(nb.typeof((np.array([1]), np.array([1])))(nb.typeof((1, 1)), nb.typeof(10), nb.typeof(1)))
+@nb.njit()
 def get_grid(shape, grid_spacing, thickness=1):
     """
     Get points for a grid. Can be used to view deformation field
@@ -643,7 +687,6 @@ def color_displacement_grid(bk_dx, bk_dy, c_range=DXDY_CRANGE, l_range=DXDY_LRAN
         warped_hcl[i] = transform.warp(grid_img[..., i], np.array([img_warp_r, img_warp_c]))
 
     grid_img = np.dstack(warped_hcl).astype(np.uint8)
-
 
     return grid_img
 

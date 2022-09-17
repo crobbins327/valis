@@ -3,7 +3,7 @@
 """
 
 import numpy as np
-from skimage import io, util
+from skimage import io
 from tqdm import tqdm
 import os
 import imghdr
@@ -252,7 +252,7 @@ class NonRigidZImage(object):
 
     """
 
-    def __init__(self, image, name, stack_idx, moving_xy=None, fixed_xy=None, mask=None):
+    def __init__(self, reg_obj, image, name, stack_idx, moving_xy=None, fixed_xy=None, mask=None):
         """
         Parameters
         ----------
@@ -279,6 +279,7 @@ class NonRigidZImage(object):
             Mask covering area to be registered.
 
         """
+        self.reg_obj = reg_obj
         self.image = image
         self.name = name
         self.stack_idx = stack_idx
@@ -384,6 +385,12 @@ class NonRigidZImage(object):
 
         """
 
+        if self.reg_obj.from_rigid_reg:
+            rigid_img_obj = self.reg_obj.src.img_obj_dict[self.name]
+            M = rigid_img_obj.M
+            unwarped_shape = rigid_img_obj.image.shape[0:2]
+            og_reg_shape_rc = rigid_img_obj.registered_shape_rc
+
         if mask is not None:
             if self.mask is not None:
                 if isinstance(self.mask, pyvips.Image):
@@ -411,6 +418,13 @@ class NonRigidZImage(object):
                 for_reg_dxdy = self.mask_dxdy(bk_dxdy, self.mask)
             else:
                 for_reg_dxdy = bk_dxdy
+
+            if self.reg_obj.from_rigid_reg:
+                for_reg_dxdy = warp_tools.remove_invasive_displacements(for_reg_dxdy,
+                                                                        M=M,
+                                                                        src_shape_rc=unwarped_shape,
+                                                                        out_shape_rc=og_reg_shape_rc
+                                                                        )
 
             moving_img = warp_tools.warp_img(self.image, bk_dxdy=for_reg_dxdy)
             if reg_mask is not None:
@@ -452,6 +466,13 @@ class NonRigidZImage(object):
                                    mask=reg_mask,
                                    **reg_kwargs)
 
+        if self.reg_obj.from_rigid_reg:
+            moving_bk_dxdy = warp_tools.remove_invasive_displacements(moving_bk_dxdy,
+                                                                      M=M,
+                                                                      src_shape_rc=unwarped_shape,
+                                                                      out_shape_rc=og_reg_shape_rc
+                                                                      )
+
         if not self.check_if_vips(moving_bk_dxdy):
             if self.mask is not None:
                 # Only add new transformations
@@ -467,6 +488,12 @@ class NonRigidZImage(object):
         if self.mask is not None:
             img_bk_dxdy = self.mask_dxdy(img_bk_dxdy, self.mask)
 
+        if self.reg_obj.from_rigid_reg:
+            img_bk_dxdy = warp_tools.remove_invasive_displacements(img_bk_dxdy,
+                                                                   M=M,
+                                                                   src_shape_rc=unwarped_shape,
+                                                                   out_shape_rc=og_reg_shape_rc
+                                                                   )
         self.bk_dxdy = img_bk_dxdy
         if hasattr(non_rigid_reg, "fwd_dxdy"):
             # Already calculated
@@ -744,8 +771,7 @@ class SerialNonRigidRegistrar(object):
             mask = mask_list[i]
             if self.mask is not None:
                 if isinstance(self.mask, pyvips.Image):
-                    combo_mask = self.mask.bandjoin(mask)
-                    mask = combo_mask.bandand()
+                    mask = self.mask.bandjoin(mask).bandand()
                 else:
                     mask = cv2.bitwise_and(self.mask, mask)
 
@@ -760,7 +786,7 @@ class SerialNonRigidRegistrar(object):
                     msg = "moving_to_fixed_xy is not a dictionary. Will be ignored"
                     valtils.print_warning(msg)
 
-            nr_obj = NonRigidZImage(img, img_name, stack_idx=i,
+            nr_obj = NonRigidZImage(self, img, img_name, stack_idx=i,
                                     moving_xy=moving_xy,
                                     fixed_xy=fixed_xy,
                                     mask=mask)
