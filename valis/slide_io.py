@@ -2505,7 +2505,8 @@ def save_ome_tiff(img, dst_f, ome_xml=None, tile_wh=1024, compression="lzw"):
     print("")
     img.tiffsave(dst_f, compression=compression, tile=True,
                  tile_width=tile_wh, tile_height=tile_wh,
-                 pyramid=True, subifd=True, bigtiff=True, lossless=True)
+                 pyramid=True, subifd=True, bigtiff=True,
+                 lossless=True, Q=100)
 
     # Print total time to completion #
     toc = time.time()

@@ -1,6 +1,7 @@
 import time
 import os
 from valis import registration
+import _pickle as cPickle
 from valis.slide_io import VipsSlideReader, BioFormatsSlideReader
 # import matplotlib
 # matplotlib.use('TkAgg')
@@ -33,6 +34,13 @@ for cf in serial_folders:
   slide_src_dir = os.path.join(main_dir, cf)
   results_dst_dir = os.path.join(main_dir, "expected_results/registration")
 
+
+  # try:
+  #   print("trying to load registrar data from saved pickle file...")
+  #   with open(os.path.join(results_dst_dir, cf, "data", "{}_registrar.pickle".format(cf)), 'rb') as regfile:
+  #     registrar = cPickle.load(regfile)
+  #   print("loading from pickle...")
+  # except:
   # Create a Valis object and use it to register the slides in slide_src_dir
   start = time.time()
   registrar = registration.Valis(slide_src_dir, results_dst_dir, imgs_ordered=True)
