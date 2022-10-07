@@ -2510,15 +2510,15 @@ def save_ome_tiff(img, dst_f, ome_xml=None, tile_wh=1024, compression="lzw"):
                  lossless=True, Q=100)
 
     # Print total time to completion #
-    toc = time.time()
-    processing_time_seconds = toc-tic
-    processing_time, processing_time_unit = valtils.get_elapsed_time_string(processing_time_seconds)
-
-    bar = '=' * bar_len
-    sys.stdout.write('[%s] %s%s %s %s %s\r' % (bar, 100.0, '%', 'in', processing_time, processing_time_unit))
-    sys.stdout.flush()
-    sys.stdout.write('\nComplete\n')
-    print("")
+    # toc = time.time()
+    # processing_time_seconds = toc-tic
+    # processing_time, processing_time_unit = valtils.get_elapsed_time_string(processing_time_seconds)
+    #
+    # bar = '=' * bar_len
+    # sys.stdout.write('[%s] %s%s %s %s %s\r' % (bar, 100.0, '%', 'in', processing_time, processing_time_unit))
+    # sys.stdout.flush()
+    # sys.stdout.write('\nComplete\n')
+    # print("")
 
 
 def convert_to_ome_tiff(src_f, dst_f, level, series=None, xywh=None,

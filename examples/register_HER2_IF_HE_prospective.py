@@ -14,17 +14,17 @@ missing = [
 # 'OS22_09539_HEnIF',
 # 'S22_20817_HEnIF',
 ]
-# comb_folders =[
-#     'S22-23380_HEnIF',
-#     'S22_19911_HEnIF',
-#     'S22-21890_HEnIF',
-#     'S22_21237_HEnIF',
-#     'S22-23643_HEnIF',
-#     'S22_20113_HEnIF',
-#     'S22_20903_HEnIF',
-#     'S22-22534_HEnIF',
-#     'S22_21024_HEnIF',
-#     'S22-21383_HEnIF',
+comb_folders =[
+    # 'S22-23380_HEnIF',
+    # 'S22_19911_HEnIF',
+    # 'S22-21890_HEnIF',
+    # 'S22_21237_HEnIF',
+    # 'S22-23643_HEnIF',
+    # 'S22_20113_HEnIF',
+    # 'S22_20903_HEnIF',
+    # 'S22-22534_HEnIF',
+    # 'S22_21024_HEnIF',
+    # 'S22-21383_HEnIF',
     # 'S22_19983_HEnIF',
     # 'OS22-10536_HEnIF',
     # 'S22_20518_HEnIF',
@@ -58,7 +58,7 @@ missing = [
     # 'S22-22201_HEnIF',
     # 'S22-22978_HEnIF',
     # 'S22_20288_HEnIF'
-# ]
+]
 # main_dir = "/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/9-30-22/combined"
 # os.listdir(main_dir)
 
@@ -71,7 +71,7 @@ missing = [
     # 'S22-22827-13_HEnIF',
     # ]
 comb_folders = [
-    # 'S22-249341-12_HEnIF',
+#     # 'S22-249341-12_HEnIF',
     'S22-24508-12_HEnIF',
     'S22-24124-12_HEnIF',
     'S22-24779-13_HEnIF',
