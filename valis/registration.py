@@ -5,6 +5,7 @@ Classes and functions to register a collection of images
 import traceback
 import re
 import os
+import shutil
 import numpy as np
 import pathlib
 from skimage import transform, exposure, filters
@@ -3757,6 +3758,11 @@ class Valis(object):
         pathlib.Path(dst_dir).mkdir(exist_ok=True, parents=True)
 
         for slide_obj in tqdm.tqdm(self.slide_dict.values()):
+            # if reference image, then skip and copy ref to folder instead?
+            if(self.reference_img_f == slide_obj.src_f):
+                print("copying reference...")
+                shutil.copy2(self.reference_img_f, dst_dir)
+                continue
             dst_f = os.path.join(dst_dir, slide_obj.name + ".ome.tiff")
             slide_obj.warp_and_save_slide(dst_f=dst_f, level = level,
                                           non_rigid=non_rigid,

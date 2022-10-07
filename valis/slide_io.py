@@ -2185,6 +2185,7 @@ def create_ome_xml(shape_xyzct, bf_dtype, is_rgb, pixel_physical_size_xyu=None, 
         new_img.pixels.channels = [rgb_channel]
 
     else:
+
         if channel_names is not None:
             default_channel_colors = slide_tools.turbo_channel_colors(c)
             channels = [create_channel(i, name=channel_names[i], color=default_channel_colors[i]) for i in range(c)]

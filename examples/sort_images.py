@@ -7,8 +7,11 @@ import shutil
 # Sort rarecyte images into serial section folders for image registration
 # idDF = pd.read_excel(r"E:\HS-HER2 Images\RareCyte-HS-HER2\Serial_sections\HS-HER2 serial section barcodes.xlsx")
 # proj_dir = r"G:\My Drive\Yale-QIF-HER2\SerialSection_IntraAssay_RCyte\5ms"
-idDF = pd.read_excel(r"G:\My Drive\Yale-QIF-HER2\WTSVal_RCyte\HS-HER2_Validation_WTS_IDs.xlsx", sheet_name=1)
-proj_dir = r"G:\My Drive\Yale-QIF-HER2\WTSVal_RCyte\5ms_HS-HER2_WTSVal"
+# idDF = pd.read_excel(r"G:\My Drive\Yale-QIF-HER2\WTSVal_RCyte\HS-HER2_Validation_WTS_IDs.xlsx", sheet_name=1)
+idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2_Validation_WTS_IDs.xlsx", sheet_name=1)
+
+# proj_dir = r"G:\My Drive\Yale-QIF-HER2\WTSVal_RCyte\5ms_HS-HER2_WTSVal"
+proj_dir = "/home/cjr66/scratch60/HS-HER2/5ms_HS-HER2_WTSVal"
 # figure out what folder names should be from DF
 def get_foldername(filename):
 	if re.match("^515", filename):
@@ -27,7 +30,7 @@ idDF["Folders"] = idDF["Outside Slide Desig."].apply(lambda i: get_foldername(i)
 # create folders
 folders_to_create = np.unique(idDF["Folders"])
 for f in folders_to_create:
-	os.makedirs(os.path.join(proj_dir, f))
+	os.makedirs(os.path.join(proj_dir, f), exist_ok=True)
 
 ome_files = [i for i in os.listdir(proj_dir) if i.endswith(".ome.tiff")]
 
@@ -40,5 +43,3 @@ for o in ome_files:
 		# move file to new destination folder
 		shutil.move(os.path.join(proj_dir, o),
 		            os.path.join(proj_dir, dst_folder, o))
-
-s
