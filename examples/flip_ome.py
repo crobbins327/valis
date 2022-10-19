@@ -2,9 +2,9 @@ import os
 import pyvips
 # import valis.slide_io
 # import zstd
-# import matplotlib
-# matplotlib.use('TkAgg')
-# import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
 import logging
 import re
 import time
@@ -12,8 +12,10 @@ import datetime
 import multiprocessing as mp
 
 
-def flip_images(img_dir, img_f, compression_type = "deflate", level = 0):
+def flip_images(img_dir, img_f, compression_type = "jp2k", level = 0):
     toilet_roll = pyvips.Image.new_from_file(os.path.join(img_dir, img_f), n=-1, subifd=level - 1)
+    # he = pyvips.Image.new_from_file(img_file)
+    # he = he.fliphor()
     toilet_roll = toilet_roll.fliphor()
     # toilet_roll.get_fields()
     # toilet_roll.get('image-description')
@@ -26,17 +28,20 @@ def flip_images(img_dir, img_f, compression_type = "deflate", level = 0):
     # -7 (fastest) to 22 (slowest but best compression ratio)
     # zstd_level = 11
     # Q = 100
-    new_f = "{}_{}_flipped.ome.tiff".format(img_f.rsplit("_deflate", 1)[0], compression_type)
+    # new_f = "{}_{}_flipped.ome.tiff".format(img_f.split(".svs")[0], compression_type)
+    new_f = "{}_{}.ome.tiff".format(img_f.rsplit("_jp2k_Hflip.ome.tiff", 1)[0], compression_type)
     print("Saving file:\n{}".format(os.path.join(img_dir, new_f)))
     start = time.time()
+    # he_rgb = he[0:3].copy(interpretation="rgb")
+    # he.tiffsave(os.path.join(img_dir, new_f),
     toilet_roll.tiffsave(os.path.join(img_dir, new_f),
                          compression=compression_type,
                          Q=100,
                          # level=zstd_level,
-                         # lossless = True,
+                         lossless = True,
                          tile=True, tile_width=1024, tile_height=1024,
                          pyramid=True, subifd=True,
-                         bigtiff=True, rgbjpeg=False)
+                         bigtiff=True)
     min, sec = divmod(time.time() - start, 60)
     print("compress time {:.0f}min : {:.2f}s".format(min, sec))
 
@@ -55,7 +60,7 @@ if __name__ == '__main__':
     for f in folders:
         l = os.listdir(os.path.join(proj_dir, f))
         if any("ome.tif" in s for s in l):
-            img_f = [o for o in os.listdir(os.path.join(proj_dir, f)) if o.endswith("_deflate.ome.tiff")][0]
+            img_f = [o for o in os.listdir(os.path.join(proj_dir, f)) if o.endswith("_jp2k.ome.tiff")][0]
             img_details.append({"image_dir": os.path.join(proj_dir, f),
                                 "image_file": img_f})
 
