@@ -1285,6 +1285,7 @@ class VipsSlideReader(SlideReader):
         vips_img = pyvips.Image.new_from_file(self.src_f)
 
         slide_meta.is_rgb = self._check_rgb(vips_img)
+        # Doesn't work for toilet roll images. needs to be updated based on chopping.
         slide_meta.n_channels = vips_img.bands
         if (slide_meta.is_rgb and vips_img.hasalpha() >= 1) or self.use_openslide:
             # Will remove alpha channel after reading
@@ -2186,7 +2187,6 @@ def create_ome_xml(shape_xyzct, bf_dtype, is_rgb, pixel_physical_size_xyu=None, 
         new_img.pixels.channels = [rgb_channel]
 
     else:
-
         if channel_names is None:
             channel_names = [f"C{i}" for i in range(c)]
 
@@ -2511,12 +2511,12 @@ def save_ome_tiff(img, dst_f, ome_xml=None, tile_wh=1024, compression="lzw"):
         sys.stdout.write('[%s] %s%s %s %s %s\r' % (bar, percents, '%', 'in', processing_time_h, "minutes"))
         sys.stdout.flush()
 
-    try:
-        img.set_progress(True)
-        img.signal_connect("eval", eval_handler)
-    except pyvips.error.Error:
-        msg = "Unable to create progress bar for pyvips. May need to update libvips to >= 8.11"
-        valtils.print_warning(msg)
+    # try:
+    #     img.set_progress(True)
+    #     img.signal_connect("eval", eval_handler)
+    # except pyvips.error.Error:
+    #     msg = "Unable to create progress bar for pyvips. May need to update libvips to >= 8.11"
+    #     valtils.print_warning(msg)
 
     print(f"saving {dst_f} ({img.width} x {image_height} and {image_bands} channels)")
 
@@ -2532,7 +2532,8 @@ def save_ome_tiff(img, dst_f, ome_xml=None, tile_wh=1024, compression="lzw"):
     print("")
     img.tiffsave(dst_f, compression=compression, tile=True,
                  tile_width=tile_wh, tile_height=tile_wh,
-                 pyramid=True, subifd=True, bigtiff=True, lossless=True)
+                 pyramid=True, subifd=True, bigtiff=True,
+                 lossless=True, Q=100)
 
     # Print total time to completion #
     toc = time.time()
