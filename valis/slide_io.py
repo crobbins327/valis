@@ -23,7 +23,7 @@ import xml.etree.ElementTree as elementTree
 import unicodedata
 import ome_types
 import jpype
-import bioformats_jar
+# import bioformats_jar
 from tqdm import tqdm
 import scyjava
 
@@ -198,16 +198,11 @@ def init_jvm(jar=None, mem_gb=10):
 
         if jar is not None:
             jpype.addClassPath(jar)
-        elif jar is None and hasattr(bioformats_jar, "JAR"):
-            jpype.addClassPath(bioformats_jar.JAR)
+            jpype.startJVM(f"-Djava.awt.headless=true -Xmx{mem_gb}G", classpath=jar)
+
         else:
             scyjava.config.endpoints.append('ome:formats-gpl')
-
-        try:
-            # jpype.startJVM(f"-Djava.awt.headless=true -Xmx{mem_gb}G", classpath=bioformats_jar.JAR)
             scyjava.start_jvm([f"-Xmx{mem_gb}G"])
-        except ModuleNotFoundError:
-            bioformats_jar.start_jvm(memory=f"{mem_gb}G")
 
         loci = jpype.JPackage("loci")
         ome = jpype.JPackage("ome")
@@ -867,9 +862,6 @@ class BioFormatsSlideReader(SlideReader):
             tile = self.slide2image(level, series, xywh=tuple(xywh))
             # javabridge.detach()
             jpype.detachThreadFromJVM()
-
-            # if np.issubdtype(pixel_type, np.unsignedinteger):
-            #     tile = util.img_as_ubyte(tile)
 
             tile_array[idx] = slide_tools.numpy2vips(tile, self.metadata.pyvips_interpretation)
 

@@ -173,3 +173,7 @@ examples/register_HER2_IF.py
 *.png
 examples/expected_results/registration/cycif/data/cycif_registrar.pickle
 examples/expected_results/registration/ihc/data/ihc_registrar.pickle
+
+docs/html/
+
+.DS_Store
