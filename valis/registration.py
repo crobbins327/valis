@@ -16,6 +16,9 @@ import pickle
 import colour
 import pyvips
 from scipy import ndimage
+import shapely
+from copy import deepcopy
+import json
 
 from . import feature_matcher
 from . import serial_rigid
@@ -78,6 +81,7 @@ QT_EMMITER_KEY = "qt_emitter"
 TFORM_SRC_SHAPE_KEY = "transformation_src_shape_rc"
 TFORM_DST_SHAPE_KEY = "transformation_dst_shape_rc"
 TFORM_MAT_KEY = "M"
+CHECK_REFLECT_KEY = "check_for_reflections"
 
 # Rigid registration kwarg keys #
 NON_RIGID_REG_CLASS_KEY = "non_rigid_reg_class"
@@ -869,11 +873,11 @@ class Slide(object):
                                               bg_color=bg_color)
         return warped_slide
 
-    @valtils.deprecated_args(crop_to_overlap="crop")
+    @valtils.deprecated_args(perceputally_uniform_channel_colors="colormap")
     def warp_and_save_slide(self, dst_f, level=0, non_rigid=True,
                             crop=True, src_f=None,
                             channel_names=None,
-                            perceputally_uniform_channel_colors=False,
+                            colormap=None,
                             interp_method="bicubic",
                             tile_wh=None, compression="lzw"):
 
@@ -904,6 +908,11 @@ class Slide(object):
         channel_names : list, optional
             List of channel names. If None, then Slide.reader
             will attempt to find the channel names associated with `src_f`.
+
+        colormap : dict, optional
+            Dictionary of channel colors, where the key is the channel name, and the value the color as rgb255.
+            If None (default), the channel colors from `current_ome_xml_str` will be used, if available.
+            If None, and there are no channel colors in the `current_ome_xml_str`, then no colors will be added
 
         src_f : str, optional
            Path of slide to be warped. If None (the deffault), Slide.src_f
@@ -944,13 +953,14 @@ class Slide(object):
 
         bf_dtype = slide_io.vips2bf_dtype(warped_slide.format)
         out_xyczt = slide_io.get_shape_xyzct((warped_slide.width, warped_slide.height), warped_slide.bands)
-        ome_xml_obj = slide_io.update_xml_for_new_img(slide_meta.original_xml,
+        ome_xml_obj = slide_io.update_xml_for_new_img(current_ome_xml_str=slide_meta.original_xml,
                                                       new_xyzct=out_xyczt,
                                                       bf_dtype=bf_dtype,
                                                       is_rgb=self.is_rgb,
+                                                      series=self.series,
                                                       pixel_physical_size_xyu=px_phys_size,
                                                       channel_names=channel_names,
-                                                      perceputally_uniform_channel_colors=perceputally_uniform_channel_colors
+                                                      colormap=colormap
                                                       )
 
         ome_xml = ome_xml_obj.to_xml()
@@ -1142,6 +1152,212 @@ class Slide(object):
                                        )
 
         return xy_in_unwarped_to_img
+
+    def warp_geojson(self, geojson_f, M=None, slide_level=0, pt_level=0,
+                non_rigid=True, crop=True):
+        """Warp geometry using registration parameters
+
+        Warps geometries to their location in the registered slide/image
+
+        Parameters
+        ----------
+        geojson_f : str
+            Path to geojson file containing the annotation geometries. Assumes
+            coordinates are in pixels.
+
+        slide_level: int, tuple, optional
+            Pyramid level of the slide. Used to scale transformation matrices.
+            Can also be the shape of the warped image (row, col) into which
+            the points should be warped. Default is 0.
+
+        pt_level: int, tuple, optional
+            Pyramid level from which the points origingated. For example, if
+            `xy` are from the centroids of cell segmentation performed on the
+            full resolution image, this should be 0. Alternatively, the value can
+            be a tuple of the image's shape (row, col) from which the points came.
+            For example, if `xy` are  bounding box coordinates from an analysis on
+            a lower resolution image, then pt_level is that lower resolution
+            image's shape (row, col). Default is 0.
+
+        non_rigid : bool, optional
+            Whether or not to conduct non-rigid warping. If False,
+            then only a rigid transformation will be applied. Default is True.
+
+        crop: bool, str
+            Apply crop to warped points by shifting points to the mask's origin.
+            Note that this can result in negative coordinates, but might be useful
+            if wanting to draw the coordinates on the registered slide, such as
+            annotation coordinates.
+
+            If `True`, then the same crop used
+            when initializing the `Valis` object will be used. If `False`, the
+            image will not be cropped. If "overlap", the warped slide will be
+            cropped to include only areas where all images overlapped.
+            "reference" crops to the area that overlaps with the reference image,
+            defined by `reference_img_f` when initialzing the `Valis object`.
+
+        """
+        if M is None:
+            M = self.M
+
+        if np.issubdtype(type(pt_level), np.integer):
+            pt_dim_rc = self.slide_dimensions_wh[pt_level][::-1]
+        else:
+            pt_dim_rc = np.array(pt_level)
+
+        if np.issubdtype(type(slide_level), np.integer):
+            if slide_level != 0:
+                if np.issubdtype(type(slide_level), np.integer):
+                    aligned_slide_shape = self.val_obj.get_aligned_slide_shape(slide_level)
+                else:
+                    aligned_slide_shape = np.array(slide_level)
+            else:
+                aligned_slide_shape = self.aligned_slide_shape_rc
+        else:
+            aligned_slide_shape = np.array(slide_level)
+
+        if non_rigid:
+            fwd_dxdy = self.fwd_dxdy
+        else:
+            fwd_dxdy = None
+
+        with open(geojson_f) as f:
+            annotation_geojson = json.load(f)
+
+        crop_method = self.get_crop_method(crop)
+        if crop_method is not False:
+            if crop_method == CROP_REF:
+                ref_slide = self.val_obj.slide_dict[valtils.get_name(self.val_obj.reference_img_f)]
+                if isinstance(slide_level, int):
+                    scaled_aligned_shape_rc = ref_slide.slide_dimensions_wh[slide_level][::-1]
+                else:
+                    if len(slide_level) == 2:
+                        scaled_aligned_shape_rc = slide_level
+            elif crop_method == CROP_OVERLAP:
+                scaled_aligned_shape_rc = aligned_slide_shape
+
+            crop_bbox_xywh, _ = self.get_crop_xywh(crop_method, scaled_aligned_shape_rc)
+            shift_xy = crop_bbox_xywh[0:2]
+        else:
+            shift_xy = None
+
+        warped_features = [None]*len(annotation_geojson["features"])
+        for i, ft in tqdm.tqdm(enumerate(annotation_geojson["features"])):
+            geom = shapely.geometry.shape(ft["geometry"])
+            warped_geom = warp_tools.warp_shapely_geom(geom, M=M,
+                                            transformation_src_shape_rc=self.processed_img_shape_rc,
+                                            transformation_dst_shape_rc=self.reg_img_shape_rc,
+                                            src_shape_rc=pt_dim_rc,
+                                            dst_shape_rc=aligned_slide_shape,
+                                            fwd_dxdy=fwd_dxdy,
+                                            shift_xy=shift_xy)
+            warped_ft = deepcopy(ft)
+            warped_ft["geometry"] = shapely.geometry.mapping(warped_geom)
+            warped_features[i] = warped_ft
+
+        warped_geojson = {"type":annotation_geojson["type"], "features":warped_features}
+
+        return warped_geojson
+
+    def warp_geojson_from_to(self, geojson_f, to_slide_obj, src_slide_level=0, src_pt_level=0,
+                            dst_slide_level=0, non_rigid=True):
+        """Warp geoms in geojson file from annotation slide to another unwarped slide
+
+        Takes a set of geometries found in this annotation slide, and warps them to
+        their position in the unwarped "to" slide.
+
+        Parameters
+        ----------
+        geojson_f : str
+            Path to geojson file containing the annotation geometries. Assumes
+            coordinates are in pixels.
+
+        to_slide_obj : Slide
+            Slide to which the points will be warped. I.e. `xy`
+            will be warped from this Slide to their position in
+            the unwarped slide associated with `to_slide_obj`.
+
+        src_pt_level: int, tuple, optional
+            Pyramid level of the slide/image in which `xy` originated.
+            For example, if `xy` are from the centroids of cell segmentation
+            performed on the unwarped full resolution image, this should be 0.
+            Alternatively, the value can be a tuple of the image's shape (row, col)
+            from which the points came. For example, if `xy` are  bounding
+            box coordinates from an analysis on a lower resolution image,
+            then pt_level is that lower resolution image's shape (row, col).
+
+        dst_slide_level: int, tuple, optional
+            Pyramid level of the slide/image in to `xy` will be warped.
+            Similar to `src_pt_level`, if `dst_slide_level` is an int then
+            the points will be warped to that pyramid level. If `dst_slide_level`
+            is the "to" image's shape (row, col), then the points will be warped
+            to their location in an image with that same shape.
+
+        non_rigid : bool, optional
+            Whether or not to conduct non-rigid warping. If False,
+            then only a rigid transformation will be applied.
+
+        Returns
+        -------
+        warped_geojson : dict
+            Dictionry of warped geojson geometries
+
+        """
+
+        if np.issubdtype(type(src_pt_level), np.integer):
+            src_pt_dim_rc = self.slide_dimensions_wh[src_pt_level][::-1]
+        else:
+            src_pt_dim_rc = np.array(src_pt_level)
+
+        if np.issubdtype(type(dst_slide_level), np.integer):
+            to_slide_src_shape_rc = to_slide_obj.slide_dimensions_wh[dst_slide_level][::-1]
+        else:
+            to_slide_src_shape_rc = np.array(dst_slide_level)
+
+        if src_slide_level != 0:
+            if np.issubdtype(type(src_slide_level), np.integer):
+                aligned_slide_shape = self.val_obj.get_aligned_slide_shape(src_slide_level)
+            else:
+                aligned_slide_shape = np.array(src_slide_level)
+        else:
+            aligned_slide_shape = self.aligned_slide_shape_rc
+
+        if non_rigid:
+            src_fwd_dxdy = self.fwd_dxdy
+            dst_bk_dxdy = to_slide_obj.bk_dxdy
+
+        else:
+            src_fwd_dxdy = None
+            dst_bk_dxdy = None
+
+        with open(geojson_f) as f:
+            annotation_geojson = json.load(f)
+
+        warped_features = [None]*len(annotation_geojson["features"])
+        for i, ft in tqdm.tqdm(enumerate(annotation_geojson["features"])):
+            geom = shapely.geometry.shape(ft["geometry"])
+            warped_geom = warp_tools.warp_shapely_geom_from_to(geom=geom,
+                                            from_M=self.M,
+                                            from_transformation_dst_shape_rc=self.reg_img_shape_rc,
+                                            from_transformation_src_shape_rc=self.processed_img_shape_rc,
+                                            from_dst_shape_rc=aligned_slide_shape,
+                                            from_src_shape_rc=src_pt_dim_rc,
+                                            from_fwd_dxdy=src_fwd_dxdy,
+                                            to_M=to_slide_obj.M,
+                                            to_transformation_src_shape_rc=to_slide_obj.processed_img_shape_rc,
+                                            to_transformation_dst_shape_rc=to_slide_obj.reg_img_shape_rc,
+                                            to_src_shape_rc=to_slide_src_shape_rc,
+                                            to_dst_shape_rc=aligned_slide_shape,
+                                            to_bk_dxdy=dst_bk_dxdy
+                                            )
+
+            warped_ft = deepcopy(ft)
+            warped_ft["geometry"] = shapely.geometry.mapping(warped_geom)
+            warped_features[i] = warped_ft
+
+        warped_geojson = {"type":annotation_geojson["type"], "features":warped_features}
+
+        return warped_geojson
 
 
 class Valis(object):
@@ -1387,13 +1603,14 @@ class Valis(object):
                  imgs_ordered=False,
                  non_rigid_registrar_cls=DEFAULT_NON_RIGID_CLASS,
                  non_rigid_reg_params=DEFAULT_NON_RIGID_KWARGS,
-                 compose_non_rigid=True,
+                 compose_non_rigid=False,
                  img_list=None,
                  reference_img_f=None,
                  align_to_reference=False,
                  do_rigid=True,
                  crop=None,
                  create_masks=True,
+                 check_for_reflections=False,
                  resolution_xyu=None, slide_dims_dict_wh=None,
                  max_image_dim_px=DEFAULT_MAX_IMG_DIM,
                  max_processed_image_dim_px=DEFAULT_MAX_PROCESSED_IMG_SIZE,
@@ -1529,6 +1746,12 @@ class Valis(object):
             Can help focus alignment on the tissue, but can sometimes
             mask too much if there is a lot of variation in the image.
 
+        check_for_reflections : bool, optional
+            Determine if alignments are improved by relfecting/mirroring/flipping
+            images. Optional because it requires re-detecting features in each version
+            of the images and then re-matching features, and so can be time consuming and
+            not always necessary.
+
         resolution_xyu: tuple, optional
             Physical size per pixel and the unit. If None (the default), these
             values will be determined for each slide using the slides' metadata.
@@ -1637,6 +1860,7 @@ class Valis(object):
                                    affine_optimizer=affine_optimizer_cls,
                                    imgs_ordered=imgs_ordered,
                                    reference_img_f=reference_img_f,
+                                   check_for_reflections=check_for_reflections,
                                    qt_emitter=qt_emitter)
 
         # Setup non-rigid registration #
@@ -1679,7 +1903,7 @@ class Valis(object):
 
     def _set_rigid_reg_kwargs(self, name, feature_detector, similarity_metric,
                               match_filter_method, transformer, affine_optimizer,
-                              imgs_ordered, reference_img_f, qt_emitter):
+                              imgs_ordered, reference_img_f, check_for_reflections, qt_emitter):
 
         """Set rigid registration kwargs
         Keyword arguments will be passed to `serial_rigid.register_images`
@@ -1700,6 +1924,7 @@ class Valis(object):
                                  AFFINE_OPTIMIZER_KEY: afo,
                                  REF_IMG_KEY: reference_img_f,
                                  IMAGES_ORDERD_KEY: imgs_ordered,
+                                 CHECK_REFLECT_KEY: check_for_reflections,
                                  QT_EMMITER_KEY: qt_emitter
                                  }
 
@@ -2024,7 +2249,7 @@ class Valis(object):
                 warp_tools.save_img(outline_f_out, thumbnail_mask_outline)
 
             else:
-                mask = None
+                mask = np.full(processed_img.shape, 255, dtype=np.uint8)
 
             slide_obj.rigid_reg_mask = mask
             slide_obj.processed_img = processed_img
@@ -2149,7 +2374,7 @@ class Valis(object):
         return mask, mask_bbox_xywh
 
     def get_all_overlap_mask(self, rigid_registrar):
-        """Create mask that covers intersection of all images
+        """Create mask that covers all tissue
 
 
         Returns
@@ -2162,23 +2387,26 @@ class Valis(object):
         """
 
         ref_slide = rigid_registrar.img_obj_dict[valtils.get_name(self.reference_img_f)]
-        mask = np.zeros(ref_slide.registered_shape_rc, dtype=int)
-        for slide_obj in rigid_registrar.img_obj_list:
-            img_mask = np.ones(slide_obj.image.shape[0:2], dtype=np.uint8)
+        combo_mask = np.zeros(ref_slide.registered_shape_rc, dtype=int)
+        for img_obj in rigid_registrar.img_obj_list:
+
+            img_mask = self.slide_dict[img_obj.name].rigid_reg_mask
             warped_img_mask = warp_tools.warp_img(img_mask,
-                                                  M=slide_obj.M,
-                                                  out_shape_rc=slide_obj.registered_shape_rc,
+                                                  M=img_obj.M,
+                                                  out_shape_rc=img_obj.registered_shape_rc,
                                                   interp_method="nearest")
 
-            mask += warped_img_mask
+            combo_mask[warped_img_mask > 0] += 1
 
-        mask[mask != self.size] = 0
-        mask[mask != 0] = 255
-        mask = mask.astype(np.uint8)
+        temp_mask = 255*filters.apply_hysteresis_threshold(combo_mask, 0.5, self.size-0.5).astype(np.uint8)
+        mask = 255*ndimage.binary_fill_holes(temp_mask).astype(np.uint8)
+        mask = preprocessing.mask2contours(mask)
 
         mask_bbox_xywh = warp_tools.xy2bbox(warp_tools.mask2xy(mask))
 
         return mask, mask_bbox_xywh
+
+
 
     def get_null_overlap_mask(self, rigid_registrar):
         """Create mask that covers all of the image.
@@ -2318,9 +2546,7 @@ class Valis(object):
             out_rc = np.round(temp_out_shape_rc*ref_to_reg_sxy).astype(int)
 
         else:
-            ref_slide_shape_rc = ref_slide_obj.slide_dimensions_wh[0][::-1]
-            ref_to_reg_sxy = (np.array(rigid_ref_obj.image.shape)/np.array(ref_slide_shape_rc))[::-1]
-            out_rc = np.round(ref_slide_shape_rc*ref_to_reg_sxy).astype(int)
+            out_rc = rigid_ref_obj.image.shape
 
         scaled_M_dict = {}
         for img_name, img_tforms in named_tform_dict.items():
@@ -2361,6 +2587,8 @@ class Valis(object):
 
             prev_img_obj = rigid_registrar.img_obj_list[fixed_idx]
             img_obj.fixed_obj = prev_img_obj
+
+            print(f"finding M for {img_obj.name}, which is being aligned to {prev_img_obj.name}")
 
             if fixed_idx == rigid_registrar.reference_img_idx:
                 prev_M = np.eye(3)
@@ -2491,7 +2719,7 @@ class Valis(object):
                 img_obj.image = matching_slide.processed_img
 
         rigid_img_list = [img_obj.registered_img for img_obj in rigid_registrar.img_obj_list]
-        self.rigid_overlap_img = self.draw_overlap_img(rigid_img_list)#[overlap_min_r:overlap_max_r, overlap_min_c:overlap_max_c]
+        self.rigid_overlap_img = self.draw_overlap_img(rigid_img_list)
         self.rigid_overlap_img = warp_tools.crop_img(self.rigid_overlap_img, overlap_mask_bbox_xywh)
 
         rigid_overlap_img_fout = os.path.join(self.overlap_dir, self.name + "_rigid_overlap.png")
@@ -2573,8 +2801,8 @@ class Valis(object):
         masked regions found in only 1 image.
 
         """
-        ref_slide = self.get_ref_slide()
-        combo_mask = np.zeros(ref_slide.reg_img_shape_rc, dtype=int)
+        
+        combo_mask = np.zeros(self.aligned_img_shape_rc, dtype=int)
         for i, slide_obj in enumerate(self.slide_dict.values()):
             rigid_mask = slide_obj.warp_img(slide_obj.rigid_reg_mask, non_rigid=False, crop=False, interp_method="nearest")
             combo_mask[rigid_mask > 0] += 1
@@ -2677,36 +2905,36 @@ class Valis(object):
 
         ref_slide = self.get_ref_slide()
 
-        if mask is not None:
+        max_s = np.min(ref_slide.slide_dimensions_wh[0]/np.array(ref_slide.processed_img_shape_rc[::-1]))
+        if mask is None:
+            if warp_full_img:
+                s = max_s
+            else:
+                s = np.min(max_img_dim/np.array(ref_slide.processed_img_shape_rc))
+        else:
+            # Determine how big image would have to be to get mask with maxmimum dimension = max_img_dim
             if isinstance(mask, pyvips.Image):
                 mask_shape_rc = np.array((mask.height, mask.width))
             else:
                 mask_shape_rc = np.array(mask.shape[0:2])
 
-        # Determine size of warped image/ROI
-        if not warp_full_img:
-            if mask is None:
-                s = np.min(max_img_dim/np.array(ref_slide.processed_img_shape_rc))
+            to_reg_mask_sxy = (mask_shape_rc/np.array(ref_slide.reg_img_shape_rc))[::-1]
+            if not np.all(to_reg_mask_sxy == 1):
+                # Resize just in case it's huge. Only need bounding box
+                reg_size_mask = warp_tools.resize_img(mask, ref_slide.reg_img_shape_rc, interp_method="nearest")
             else:
-                # If there is a mask then want its scaled bounding box to be == max_img_dim
-                to_reg_mask_sxy = (mask_shape_rc/np.array(ref_slide.reg_img_shape_rc))[::-1]
-                if not np.all(to_reg_mask_sxy == 1):
-                    # Resize just in case it's huge. Only need bounding box
-                    reg_size_mask = warp_tools.resize_img(mask, ref_slide.reg_img_shape_rc, interp_method="nearest")
-                else:
-                    reg_size_mask = mask
-                reg_size_mask_xy = warp_tools.mask2xy(reg_size_mask)
-                to_reg_mask_bbox_xywh = list(warp_tools.xy2bbox(reg_size_mask_xy))
-                to_reg_mask_wh = np.round(to_reg_mask_bbox_xywh[2:]).astype(int)
+                reg_size_mask = mask
+            reg_size_mask_xy = warp_tools.mask2xy(reg_size_mask)
+            to_reg_mask_bbox_xywh = list(warp_tools.xy2bbox(reg_size_mask_xy))
+            to_reg_mask_wh = np.round(to_reg_mask_bbox_xywh[2:]).astype(int)
+            if warp_full_img:
+                s = max_s
+            else:
                 s = np.min(max_img_dim/np.array(to_reg_mask_wh))
 
-            max_s = np.min(ref_slide.slide_dimensions_wh[0]/np.array(ref_slide.processed_img_shape_rc[::-1]))
-            if s < max_s:
-                full_out_shape = self.get_aligned_slide_shape(s)
-            else:
-                full_out_shape = self.get_aligned_slide_shape(0)
+        if s < max_s:
+            full_out_shape = self.get_aligned_slide_shape(s)
         else:
-            # Will register full size
             full_out_shape = self.get_aligned_slide_shape(0)
 
         if mask is None:
@@ -2776,6 +3004,13 @@ class Valis(object):
             else:
                 dxdy = None
 
+            # Get mask
+            temp_processing_mask = slide_obj.warp_img(slide_obj.rigid_reg_mask, non_rigid=dxdy is not None, crop=False, interp_method="nearest")
+            temp_processing_mask = warp_tools.numpy2vips(temp_processing_mask)
+            slide_mask = warp_tools.resize_img(temp_processing_mask, full_out_shape, interp_method="nearest")
+            if mask_bbox_xywh is not None:
+                slide_mask = warp_tools.crop_img(slide_mask, mask_bbox_xywh)
+
             if not use_tiler:
                 # Process image using same method for rigid registration #
                 unprocessed_warped_img = warp_tools.warp_img(img=img_to_warp, M=slide_obj.M,
@@ -2786,6 +3021,8 @@ class Valis(object):
                     bbox_xywh=mask_bbox_xywh,
                     bg_color=slide_obj.bg_color)
 
+                unprocessed_warped_img = warp_tools.vips2numpy(unprocessed_warped_img)
+
                 temp_processing_mask = pyvips.Image.black(img_to_warp.width, img_to_warp.height).invert()
                 processing_mask = warp_tools.warp_img(img=temp_processing_mask, M=slide_obj.M,
                     bk_dxdy=dxdy,
@@ -2794,9 +3031,6 @@ class Valis(object):
                     out_shape_rc=full_out_shape,
                     bbox_xywh=mask_bbox_xywh,
                     interp_method="nearest")
-
-                unprocessed_warped_img = warp_tools.vips2numpy(unprocessed_warped_img)
-                processing_mask = warp_tools.vips2numpy(processing_mask)
 
                 if slide_obj.img_type == slide_tools.IHC_NAME:
                     processing_cls = brightfield_processing_cls
@@ -2813,10 +3047,12 @@ class Valis(object):
                     # processor.process_image doesn't take kwargs
                     processed_img = processor.process_image()
                 processed_img = exposure.rescale_intensity(processed_img, out_range=(0, 255)).astype(np.uint8)
-                processed_img[processing_mask==0] = 0
+
+                np_mask = warp_tools.vips2numpy(slide_mask)
+                processed_img[np_mask==0] = 0
 
                 # Normalize images using stats collected for rigid registration #
-                warped_img = preprocessing.norm_img_stats(processed_img, self.target_processing_stats, mask=processing_mask)
+                warped_img = preprocessing.norm_img_stats(processed_img, self.target_processing_stats, mask=slide_mask)
                 warped_img = exposure.rescale_intensity(warped_img, out_range=(0, 255)).astype(np.uint8)
 
             else:
@@ -2831,23 +3067,14 @@ class Valis(object):
                     warped_img = slide_obj.warp_slide(0, non_rigid=updating_non_rigid, crop=mask_bbox_xywh)
 
             # Get mask #
-            img_fg =  pyvips.Image.black(slide_obj.processed_img_shape_rc[1], slide_obj.processed_img_shape_rc[0]).invert()
-            temp_mask = warp_tools.warp_img(img_fg, M=slide_obj.M, out_shape_rc=slide_obj.reg_img_shape_rc)
-            vips_mask = warp_tools.resize_img(temp_mask, full_out_shape, interp_method="nearest")
             if mask is not None:
-                vips_mask = vips_mask.extract_area(*mask_bbox_xywh)
-                vips_mask = (vips_micro_reg_mask==0).ifthenelse(0, vips_mask)
-
-            if use_tiler:
-                slide_mask = vips_mask
-            else:
-                slide_mask = warp_tools.vips2numpy(vips_mask).astype(np.uint8)
+                slide_mask = (vips_micro_reg_mask==0).ifthenelse(0, slide_mask)
 
             # Update lists
             img_f_list[slide_obj.stack_idx] = slide_obj.src_f
             img_names_list[slide_obj.stack_idx] = slide_obj.name
             scaled_warped_img_list[slide_obj.stack_idx] = warped_img
-            scaled_mask_list[slide_obj.stack_idx] = slide_mask
+            scaled_mask_list[slide_obj.stack_idx] = processing_mask
 
 
         img_dict = {serial_non_rigid.IMG_LIST_KEY: scaled_warped_img_list,
@@ -2861,7 +3088,7 @@ class Valis(object):
             scaled_non_rigid_mask = warp_tools.resize_img(vips_nr_mask, full_out_shape, interp_method="nearest")
             if mask is not None:
                 scaled_non_rigid_mask = scaled_non_rigid_mask.extract_area(*mask_bbox_xywh)
-                scaled_non_rigid_mask=  (vips_micro_reg_mask == 0).ifthenelse(0, scaled_non_rigid_mask)
+                scaled_non_rigid_mask = (vips_micro_reg_mask == 0).ifthenelse(0, scaled_non_rigid_mask)
             if not use_tiler:
                 scaled_non_rigid_mask = warp_tools.vips2numpy(scaled_non_rigid_mask)
         else:
@@ -2873,6 +3100,7 @@ class Valis(object):
             final_max_img_dim = max_img_dim
 
         return img_dict, final_max_img_dim, scaled_non_rigid_mask, full_out_shape, mask_bbox_xywh
+
 
     def non_rigid_register(self, rigid_registrar,
         brightfield_processing_cls, brightfield_processing_kwargs,
@@ -2926,7 +3154,6 @@ class Valis(object):
 
         self._full_displacement_shape_rc = full_out_shape_rc
         non_rigid_registrar = serial_non_rigid.register_images(src=nr_reg_src,
-                                                               mask=non_rigid_reg_mask,
                                                                align_to_reference=self.align_to_reference,
                                                                **self.non_rigid_reg_kwargs)
         self.end_non_rigid_time = time()
@@ -2942,19 +3169,13 @@ class Valis(object):
                 # If a mask was used, the displacement fields will be smaller
                 # So need to insert them in the full image
                 bk_dxdy = self.pad_displacement(nr_obj.bk_dxdy, full_out_shape_rc, mask_bbox_xywh)
+                fwd_dxdy = self.pad_displacement(nr_obj.fwd_dxdy, full_out_shape_rc, mask_bbox_xywh)
             else:
                 bk_dxdy = nr_obj.bk_dxdy
+                fwd_dxdy = nr_obj.fwd_dxdy
 
-            rigid_obj = self.rigid_registrar.img_obj_dict[nr_name]
-            cleaned_bk_dxdy = warp_tools.remove_invasive_displacements(bk_dxdy,
-                                                                    M=rigid_obj.M,
-                                                                    src_shape_rc=rigid_obj.image.shape[0:2],
-                                                                    out_shape_rc=rigid_obj.registered_shape_rc)
-
-            cleaned_fwd_dxdy = warp_tools.get_inverse_field(cleaned_bk_dxdy)
-
-            nr_obj.bk_dxdy = cleaned_bk_dxdy
-            nr_obj.fwd_dxdy = cleaned_fwd_dxdy
+            nr_obj.bk_dxdy = bk_dxdy
+            nr_obj.fwd_dxdy = fwd_dxdy
 
         # Draw overlap image #
         overlap_mask, overlap_mask_bbox_xywh = self.get_crop_mask(self.crop)
@@ -2979,9 +3200,6 @@ class Valis(object):
 
         n_digits = len(str(self.size))
         for slide_name, slide_obj in self.slide_dict.items():
-            # slide_name = "401427_BrdU"
-            # slide_obj = self.slide_dict[slide_name]
-
             img_save_id = str.zfill(str(slide_obj.stack_idx), n_digits)
             slide_nr_reg_obj = non_rigid_registrar.non_rigid_obj_dict[slide_name]
             slide_obj.bk_dxdy = slide_nr_reg_obj.bk_dxdy
@@ -3545,21 +3763,8 @@ class Valis(object):
 
             nr_obj = non_rigid_registrar.non_rigid_obj_dict[slide_obj.name]
             is_array = False
-            if not isinstance(nr_obj.bk_dxdy[0], pyvips.Image):
-                is_array = True
-                cleaned_bk_dxdy = warp_tools.remove_invasive_displacements(nr_obj.bk_dxdy,
-                                                                    M=slide_obj.M,
-                                                                    src_shape_rc=slide_obj.processed_img_shape_rc,
-                                                                    out_shape_rc=slide_obj.reg_img_shape_rc)
-                cleaned_fwd_dxdy = warp_tools.get_inverse_field(cleaned_bk_dxdy)
-
-                new_bk_dxdy = warp_tools.numpy2vips(np.dstack(cleaned_bk_dxdy))
-                new_fwd_dxdy = warp_tools.numpy2vips(np.dstack(cleaned_fwd_dxdy))
-
-            else:
-                new_bk_dxdy = nr_obj.bk_dxdy
-                new_fwd_dxdy = nr_obj.fwd_dxdy
-
+            new_bk_dxdy = nr_obj.bk_dxdy
+            new_fwd_dxdy = nr_obj.fwd_dxdy
 
             if np.any(non_rigid_registrar.shape != full_out_shape_rc):
                 # Micro-registration perfomred on sub-region. Need to put in full image
@@ -3711,10 +3916,10 @@ class Valis(object):
 
         return slide_obj
 
-    @valtils.deprecated_args(crop_to_overlap="crop")
+    @valtils.deprecated_args(perceputally_uniform_channel_colors="colormap")
     def warp_and_save_slides(self, dst_dir, level = 0, non_rigid=True,
                              crop=True,
-                             perceputally_uniform_channel_colors=False,
+                             colormap=None,
                              interp_method="bicubic",
                              tile_wh=None, compression="lzw"):
 
@@ -3744,6 +3949,9 @@ class Valis(object):
             "reference" crops to the area that overlaps with the reference image,
             defined by `reference_img_f` when initialzing the `Valis object`.
 
+        colormap : list
+            List of RGB colors (0-255) to use for channel colors
+
         interp_method : str
             Interpolation method used when warping slide. Default is "bicubic"
 
@@ -3758,23 +3966,36 @@ class Valis(object):
         pathlib.Path(dst_dir).mkdir(exist_ok=True, parents=True)
 
         for slide_obj in tqdm.tqdm(self.slide_dict.values()):
+
             # if reference image, then skip and copy ref to folder instead?
             if(self.reference_img_f == slide_obj.src_f):
                 print("copying reference...")
                 shutil.copy2(self.reference_img_f, dst_dir)
                 continue
+
+            slide_cmap = None
+            if colormap is not None:
+                chnl_names = slide_obj.reader.metadata.channel_names
+                if chnl_names is not None:
+                    if len(colormap) >= len(chnl_names):
+                        slide_cmap = {chnl_names[i]:tuple(colormap[i]) for i in range(len(chnl_names))}
+
+                    else:
+                        msg = f'{slide_obj.name} has {len(chnl_names)} but colormap only has {len(colormap)} colors'
+                        valtils.print_warning(msg)
+
             dst_f = os.path.join(dst_dir, slide_obj.name + ".ome.tiff")
             slide_obj.warp_and_save_slide(dst_f=dst_f, level = level,
                                           non_rigid=non_rigid,
                                           crop=crop,
-                                          perceputally_uniform_channel_colors=perceputally_uniform_channel_colors,
                                           interp_method=interp_method,
+                                          colormap=slide_cmap,
                                           tile_wh=tile_wh, compression=compression)
 
-    @valtils.deprecated_args(crop_to_overlap="crop")
+    @valtils.deprecated_args(perceputally_uniform_channel_colors="colormap")
     def warp_and_merge_slides(self, dst_f=None, level=0, non_rigid=True,
                               crop=True, channel_name_dict=None,
-                              src_f_list=None, perceputally_uniform_channel_colors=False,
+                              src_f_list=None, colormap=None,
                               drop_duplicates=True, tile_wh=None,
                               interp_method="bicubic", compression="lzw"):
 
@@ -3812,8 +4033,8 @@ class Valis(object):
             be an alternative copy of the slides, such as ones that have undergone
             processing (e.g. stain segmentation), had a mask applied, etc...
 
-        perceputally_uniform_channel_colors : bool, optional
-            Whether or not to add perceptually uniform channel colors.
+        colormap : list
+            List of RGB colors (0-255) to use for channel colors
 
         drop_duplicates : bool, optional
             Whether or not to drop duplicate channels that might be found in multiple slides.
@@ -3890,13 +4111,25 @@ class Valis(object):
             all_channel_names.extend(slide_channel_names)
 
 
+        if colormap is not None:
+            if len(colormap) >= len(all_channel_names):
+                cmap_dict = {all_channel_names[i]:tuple(colormap[i]) for i in range(len(all_channel_names))}
+
+            else:
+                msg = f'Merged image has {len(all_channel_names)} but colormap only has {len(colormap)} colors'
+                valtils.print_warning(msg)
+
+        else:
+            cmap_dict = None
+
         px_phys_size = slide_obj.reader.scale_physical_size(level)
         bf_dtype = slide_io.vips2bf_dtype(merged_slide.format)
         out_xyczt = slide_io.get_shape_xyzct((merged_slide.width, merged_slide.height), merged_slide.bands)
+
         ome_xml_obj = slide_io.create_ome_xml(out_xyczt, bf_dtype, is_rgb=False,
                                               pixel_physical_size_xyu=px_phys_size,
                                               channel_names=all_channel_names,
-                                              perceputally_uniform_channel_colors=perceputally_uniform_channel_colors)
+                                              colormap=cmap_dict)
         ome_xml = ome_xml_obj.to_xml()
 
         if dst_f is not None:
