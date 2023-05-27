@@ -5,15 +5,23 @@ import numpy as np
 import shutil
 
 # Sort HE and IF images into a combined folder
-# idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/10-05-22/HS-HER2 Prospective 10-05-22.xlsx", sheet_name=2)
-# idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/9-30-22/HS-HER2 prospective & premalig IDs 9-30-22.xlsx", sheet_name=1)
-# idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/10-13-22/HS-HER2 Prospective 10-13-22.xlsx", sheet_name=2)
-idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/10-17-22/HS-HER2 Prospective 10-17-22.xlsx", sheet_name=2)
+# idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/HS-HER2 Prospective 10-05-22.xlsx", sheet_name=2)
+# idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/HS-HER2 prospective & premalig IDs 9-30-22.xlsx", sheet_name=1)
+# idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/HS-HER2 Prospective 10-13-22.xlsx", sheet_name=2)
+idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/HS-HER2 Prospective 10-17-22.xlsx", sheet_name=2)
+# idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/HS-HER2 Prospective 11-04-22.xlsx", sheet_name=2)
+# idDF = pd.read_excel("/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/HS-HER2 Prospective 01-19-23.xlsx", sheet_name=2)
 idDF = idDF.dropna(axis=0, subset="Outside Slide Desig.")
+# idDF["Outside Slide Desig."] = idDF["Outside Slide Desig."].apply(lambda i: "-".join(i.split("_")))
 
-proj_dir = "/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/10-17-22/combined"
-IF_dir = "/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/10-17-22/IF"
-HE_dir = "/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/10-17-22/H&E"
+main_dir = "/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/10-17-22/"
+
+proj_dir = os.path.join(main_dir, "combined")
+# IF_dir = "/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/11-04-22/IF"
+# HE_dir = "/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/11-04-22/H&E"
+
+IF_dir = main_dir
+HE_dir = main_dir
 # figure out what folder names should be from DF
 def get_foldername(filename):
 	if re.match("^515", filename):
@@ -56,7 +64,8 @@ for f in folders_to_scan:
 	folder_id_parts = list(re_rsplit(re.compile(r"-|_"), f_split, 1))
 	HE_f = [s for s in HE_files if re.search("^{}".format("-".join(folder_id_parts[:2])), s)]
 	barcode = idDF[idDF["Folders"] == f]["Yale Case No."].values[0]
-	IF_f = [o for o in IF_ome_files if re.search(barcode, o)]
+	print("barcode: {}".format(barcode))
+	IF_f = [o for o in IF_ome_files if re.search("\[{}\]".format(barcode), o)]
 	if not HE_f and not IF_f:
 		print("no files found for folder {}".format(f))
 		print("skipping...")

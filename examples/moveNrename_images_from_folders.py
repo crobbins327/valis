@@ -2,7 +2,7 @@ import os
 import shutil
 import re
 
-folder_dir = r"/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/9-30-22/rigid_registered_slides"
+folder_dir = r"/home/cjr66/scratch60/HS-HER2/HS-HER2 Prospective/10-13-22/combined/expected_results/nonrigid_registered_slides"
 folders = os.listdir(folder_dir)
 
 for f in folders:
