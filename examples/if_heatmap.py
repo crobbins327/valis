@@ -6,6 +6,8 @@ import os
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
+
+
 # from valis.slide_io import VipsSlideReader, BioFormatsSlideReader, get_slide_reader
 
 aligned_IF_folders =[]
@@ -118,8 +120,4 @@ channel_img.tiffsave(os.path.join(output_dir, "test.ome.tiff"),
                 pyramid=False, subifd=False,
                 bigtiff=True
                 )
-
-
-
-
 
